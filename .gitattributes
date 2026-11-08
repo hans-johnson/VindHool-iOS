@@ -1,0 +1,23 @@
+# 12 MB 单文件网页：禁止任何换行转换，保证五处产物字节完全一致，
+# CI 里 `cmp www/index.html ios/App/App/public/index.html` 与包内字节数校验才稳定。
+www/index.html -text
+
+# macOS / Linux 上执行的构建脚本必须保持 LF，否则 `bash scripts/build-ipa.sh` 会报
+# $'\r': command not found
+*.sh text eol=lf
+
+# CI 工作流与 PowerShell/Gradle 配置同样按 LF 入库
+*.yml text eol=lf
+*.yaml text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.xml text eol=lf
+*.pbxproj text eol=lf
+*.plist text eol=lf
+*.swift text eol=lf
+*.storyboard text eol=lf
+*.gradle text eol=lf
+*.properties text eol=lf
+*.md text eol=lf
+Podfile text eol=lf

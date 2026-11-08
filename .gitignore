@@ -1,0 +1,30 @@
+# npm 依赖：本地/CI 用 npm ci 从 package-lock.json 重装，几百 MB，不入库
+node_modules/
+
+# Gradle 缓存与构建产物：可重建，体积大，不入库
+android/.gradle/
+android/build/
+android/app/build/
+
+# 本机 SDK 路径（sdk.dir=...），因机器而异，绝不能入库
+android/local.properties
+
+# Capacitor 生成的 Cordova 兼容层（cap sync 每次自动重建）
+android/capacitor-cordova-android-plugins/
+
+# cap sync 从 www/ 复制出的副本：内容与 www/index.html 重复，重建即可
+android/app/src/main/assets/public/
+android/app/src/main/assets/capacitor.config.json
+android/app/src/main/assets/capacitor.plugins.json
+
+# 杂项日志/系统文件
+*.log
+.DS_Store
+Thumbs.db
+
+# 注意：www/index.html 必须提交，不要写进 .gitignore。
+# 原因：CI 里没有仓库外的源文件（../delijn-realtime/index.html），它就是这个 APK 的唯一内容来源。
+
+# 可重建的离线工程包 / 本机旧备份，不入库
+VindHool-iOS-build.zip
+*.bak-*

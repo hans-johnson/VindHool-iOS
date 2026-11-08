@@ -1,0 +1,105 @@
+name: iOS IPA (unsigned)
+
+# 云端出 iOS 包：GitHub Actions 的 macOS runner 自带 Xcode + CocoaPods，
+# 本机是 Windows 也能拿到 .ipa。产物是「未签名 IPA」—— 用 Sideloadly / AltStore
+# / 爱思助手 + 免费 Apple ID 重签即可装到 iPhone；要已签名包请在 Mac 上跑
+# scripts/build-ipa.sh --team <TEAMID>。
+#
+# 触发：Actions → iOS IPA (unsigned) → Run workflow，或 push 到 main 且改动了下列文件。
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "www/index.html"
+      - "ios/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/ios-ipa.yml"
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Verify committed www/index.html (structure only)
+        run: |
+          test -s www/index.html || { echo "www/index.html 缺失或为空"; exit 1; }
+          SIZE=$(stat -f%z www/index.html)
+          echo "www/index.html size=$SIZE"
+          test "$SIZE" -ge 1048576 || { echo "体积异常偏小（<1MB），可能不是完整页面"; exit 1; }
+          grep -q '<html' www/index.html || { echo "缺少 <html>"; exit 1; }
+          grep -q 'id="map"' www/index.html || { echo "缺少地图容器 id=\"map\""; exit 1; }
+          grep -q 'window.dlBack' www/index.html || { echo "缺少 window.dlBack 返回钩子"; exit 1; }
+          grep -q 'initIosBack' www/index.html || { echo "缺少 iOS 返回按钮逻辑"; exit 1; }
+          tail -c 200 www/index.html | grep -q '</html>' || { echo "文件末尾缺少 </html>（可能被截断）"; exit 1; }
+          echo "结构校验通过"
+
+      - name: Capacitor copy (ios)
+        run: |
+          # public/ 与 cordova 兼容层目录被 .gitignore 忽略，checkout 后先补空目录
+          mkdir -p ios/App/App/public ios/capacitor-cordova-ios-plugins/sources ios/capacitor-cordova-ios-plugins/resources
+          npx cap copy ios
+          cmp www/index.html ios/App/App/public/index.html
+          echo "iOS 网页资源与 www/index.html 完全一致"
+
+      - name: CocoaPods install
+        working-directory: ios/App
+        run: |
+          pod install --no-repo-update
+          test -f Pods/Pods.xcodeproj/project.pbxproj || { echo "Pods 工程未生成"; exit 1; }
+
+      - name: Archive (no code signing)
+        working-directory: ios/App
+        run: |
+          rm -rf build/App.xcarchive
+          xcodebuild -workspace App.xcworkspace -scheme App -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$PWD/build/App.xcarchive" \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+            clean archive
+
+      - name: Pack unsigned IPA
+        run: |
+          APP=ios/App/build/App.xcarchive/Products/Applications/App.app
+          test -d "$APP" || { echo "archive 里没有 App.app"; exit 1; }
+          mkdir -p ios/App/output/Payload
+          cp -R "$APP" ios/App/output/Payload/
+          cd ios/App/output
+          zip -qry ../VindHool-unsigned.ipa Payload
+
+      - name: Verify IPA contents
+        run: |
+          IPA=ios/App/VindHool-unsigned.ipa
+          unzip -l "$IPA" | grep 'Payload/App.app/Info.plist' || { echo "包内缺少 Info.plist"; exit 1; }
+          WEB=$(unzip -p "$IPA" Payload/App.app/public/index.html | wc -c | tr -d ' ')
+          echo "包内网页 ${WEB} 字节"
+          test "$WEB" -ge 1048576 || { echo "包内网页资源异常"; exit 1; }
+          test "$WEB" -eq "$(stat -f%z www/index.html)" || { echo "包内网页与 www/index.html 不一致"; exit 1; }
+          ls -lh "$IPA"
+          shasum -a 256 "$IPA"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VindHool-unsigned-${{ github.sha }}
+          path: ios/App/*.ipa
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,100 @@
+name: Android Debug APK
+
+# 云端构建：不需要本机装 Android SDK。
+# 方案 A —— www/index.html 直接提交进仓库，CI 跳过 sync-www.mjs（源文件在仓库外，CI 里不存在）。
+# 不需要 keystore：只用 debug 签名（自用安装足够）。
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "www/index.html"
+      - "android/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/android.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK packages (versions derived from Gradle)
+        run: |
+          SDK=$(sed -nE 's/^\s*compileSdkVersion\s*=\s*([0-9]+).*/\1/p' android/variables.gradle | head -n1)
+          test -n "$SDK" || { echo "无法从 android/variables.gradle 读取 compileSdkVersion"; exit 1; }
+          echo "compileSdkVersion=$SDK"
+          sdkmanager "platforms;android-$SDK" "platform-tools"
+          # build-tools 不写死版本：优先 AGP 惯用的 <sdk>.0.0，取不到就装该 SDK 下可用的最新版
+          if ! sdkmanager "build-tools;$SDK.0.0" >/dev/null 2>&1; then
+            BT=$(sdkmanager --list 2>/dev/null | awk -v s="$SDK" '$1 ~ "^build-tools;" s "\\." {print $1}' | sort -V | tail -n1)
+            test -n "$BT" || { echo "找不到 android-$SDK 对应的 build-tools"; exit 1; }
+            sdkmanager "$BT"
+          fi
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Verify committed www/index.html (structure only)
+        run: |
+          test -s www/index.html || { echo "www/index.html 缺失或为空"; exit 1; }
+          SIZE=$(stat -c %s www/index.html)
+          echo "www/index.html size=$SIZE"
+          # 不再比对固定字节数/哈希：抓取数据每次都会变，只校验结构锚点与最小体积
+          test "$SIZE" -ge 1048576 || { echo "体积异常偏小（<1MB），可能不是完整页面"; exit 1; }
+          grep -q '<html' www/index.html || { echo "缺少 <html>"; exit 1; }
+          grep -q 'id="map"' www/index.html || { echo "缺少地图容器 id=\"map\""; exit 1; }
+          grep -q 'window.dlBack' www/index.html || { echo "缺少 window.dlBack 返回钩子"; exit 1; }
+          tail -c 200 www/index.html | grep -q '</html>' || { echo "文件末尾缺少 </html>（可能被截断）"; exit 1; }
+          echo "结构校验通过"
+
+      - name: Capacitor sync (android)
+        run: npx cap sync android
+
+      - name: Verify packaged asset (assets/public/index.html)
+        run: |
+          SIZE=$(stat -c %s android/app/src/main/assets/public/index.html)
+          SHA=$(sha256sum android/app/src/main/assets/public/index.html | cut -d' ' -f1)
+          echo "assets/public/index.html  size=$SIZE sha256=$SHA"
+          cmp www/index.html android/app/src/main/assets/public/index.html
+          echo "打包内容与 www/index.html 完全一致"
+
+      - name: Build debug APK
+        working-directory: android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Show APK
+        run: |
+          ls -lh android/app/build/outputs/apk/debug/
+          sha256sum android/app/build/outputs/apk/debug/*.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-${{ github.sha }}
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14

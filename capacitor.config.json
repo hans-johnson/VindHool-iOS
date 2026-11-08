@@ -1,0 +1,19 @@
+{
+  "appId": "com.phant.delijnrt",
+  "appName": "VindHool",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": false,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": false
+  },
+  "ios": {
+    "contentInset": "never",
+    "zoomEnabled": false,
+    "backgroundColor": "#F2F3F5",
+    "limitsNavigationsToAppBoundDomains": false
+  }
+}

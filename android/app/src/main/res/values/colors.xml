@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- De Lijn 中性灰：与页面背景 #F2F3F5、卡片 #FFFFFF、边框 #DDDDDD 对齐，避免启动闪深蓝 -->
+    <color name="app_bg">#F2F3F5</color>
+    <color name="colorPrimary">#F2F3F5</color>
+    <color name="colorPrimaryDark">#DDDDDD</color>
+    <color name="colorAccent">#FFD800</color>
+</resources>
