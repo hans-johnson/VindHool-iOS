@@ -11,8 +11,35 @@
 已选定 **A 路**：把 `delijn-realtime-android` 这个壳仓库 push 到 GitHub，由
 `.github/workflows/ios-ipa.yml` 在 **macOS runner** 上编译并产出 `VindHool-unsigned.ipa`。
 
-**现在还没有任何 `.ipa` 文件**。工程、工作流、脚本、说明都已备好并验证过，
-接手者剩下的是：建 GitHub 空仓库 → 提交并 push → 下载 Actions 产物 → 重签安装。
+**A 路已经跑通，`VindHool-unsigned.ipa` 已产出**（结果见 §0.1）。
+下面 §3 的步骤现在主要用于「复现」或「以后改了网页重新出包」；
+日常只需要按 §6 更新 `www/index.html` 并 push，CI 会自动重新出 IPA。
+
+---
+
+## 0.1 本次实际执行结果（2026-11-09 02:43 GMT+8）
+
+| 项 | 值 |
+|---|---|
+| GitHub 仓库 | **https://github.com/hans-johnson/VindHool-iOS**（公开，默认分支 `main`） |
+| 账号 / 授权 | `hans-johnson`；winget 装 GitHub CLI 2.103.3 → 设备码登录，token scopes `repo, workflow`。凭据存在系统 keyring，**未写入 `.git/config`**（push 用一次性 HTTP header） |
+| 首个 commit | `93e3d5f` — 85 个文件，`iOS shell: Capacitor 7 + unsigned IPA workflow` |
+| CI run | `iOS IPA (unsigned)` **42511083463**，push 自动触发，macos-15，**2 分 14 秒全绿**（7 步：checkout → node → Xcode → npm ci → 网页校验 → cap copy → pod install → archive → 打包 → 包内校验 → 上传） |
+| 产物 | artifact `VindHool-unsigned-93e3d5f…zip` → `VindHool-unsigned.ipa`，**3,754,947 字节（3.58 MiB）**；本机已存 `dist/VindHool-unsigned.ipa` |
+| 包内核验 | `Payload/App.app/public/index.html` = **12,279,294 字节 / md5 `e940bcc3…`**，与 `www/index.html` 逐字节一致；`CFBundleIdentifier=com.phant.delijnrt`、`MinimumOSVersion=14.0`、`arm64`、**未签名**（无 `_CodeSignature`） |
+| artifact 到期 | 保留 **14 天**（约 2026-11-22），地址：仓库 → Actions → 该 run → Artifacts |
+
+安装方式见 §3.7：未签名 IPA 必须 Sideloadly / AltStore / 爱思助手配合 Apple ID 重签。
+
+⚠️ 同一仓库还有一条 `Android Debug APK` 工作流。首次 push 它因
+`android-actions/setup-android@v3` 默认安装已下架的 `tools` 包而失败
+（`Warning: Failed to find package 'tools'` → sdkmanager exit 1），**与 iOS 无关**；
+已改为 `with: packages: platform-tools` 并推送修复。
+
+⚠️ 新增了 `.gitattributes`：`www/index.html` 标 `-text`、`.sh` 等标 `eol=lf`。
+首次提交时实测 Windows 的 `core.autocrlf` 会把网页从 12,279,294 转成 12,271,086 字节
+（少 8,208 个 CR），加了它之后仓库 blob 与源文件字节、md5 才完全一致。
+**以后不要删这个文件**，否则 CI 里 `cmp` 与包内字节数校验会失准。
 
 ---
 
@@ -48,12 +75,14 @@
 | 项 | 状态 |
 |---|---|
 | Git | 2.55.0.windows.3，可用 |
-| `.git` | **已执行 `git init`**（为核对提交清单而建），目前是**空仓库：0 个 commit、暂存区为空** |
-| 全局 `user.name` / `user.email` | **都未配置** → 不配置就 `git commit` 会直接失败 |
-| `gh` CLI | 未安装 → 需在 GitHub 网页手工建空仓库 |
-| 当前分支 | `git init` 默认的 `master`，push 前用 `git branch -M main` 统一（workflow 只监听 `main`） |
+| `.git` | 已有 **1 个 commit `93e3d5f`**，`origin` = `https://github.com/hans-johnson/VindHool-iOS.git` |
+| 全局 `user.name` / `user.email` | 仍**未配置**（不污染全局）；已设仓库级 `hans-johnson` / `3396363+hans-johnson@users.noreply.github.com`（GitHub noreply，避免公开真实邮箱） |
+| `gh` CLI | **已装 2.103.3**（winget），已登录 `hans-johnson`，scopes `repo, workflow` |
+| 当前分支 | `main`，已追踪 `origin/main`（workflow 只监听 `main`） |
+| 忽略规则 | `.gitignore` 追加 `VindHool-iOS-build.zip` / `*.bak-*` / `dist/`；`.gitattributes` 管换行 |
 
-> 如果不想保留这个空 `.git`，删掉它即可（无任何提交、无数据损失），后面 §3.2 会重新 `git init`。
+> 本机可执行文件真实路径：`C:\Users\PHANT\AppData\Local\Microsoft\WinGet\Packages\GitHub.cli_Microsoft.Winget.Source_8wekyb3d8bbwe\bin\gh.exe`。
+> WinGet Links 目录里的 `gh.exe` 是 0 字节别名，在 Git Bash 里调用会静默无输出，别用它。
 
 ### 敏感信息核查（公开仓库前必看）
 
@@ -67,7 +96,11 @@
 
 ---
 
-## 3. 接手者要做的事（PowerShell，逐行执行）
+## 3. 复现 / 换仓库重来（PowerShell，逐行执行）
+
+> **本节步骤本次已全部执行完毕**（结果见 §0.1）。只有换新仓库、迁到别的账号，
+> 或删掉 `.git` 重来时才需要重做；日常更新网页直接走 §6。
+> 本机已配好 GitHub 凭据，`git push` 无需再输密码（见 §3.5 末尾）。
 
 工作目录固定为壳工程根：
 
@@ -128,17 +161,24 @@ git branch -M main
 git push -u origin main
 ```
 
-`git push` 若要求密码：GitHub 已不接受账号密码。优先走 Git Credential Manager 的浏览器授权；
-不行就去 GitHub → Settings → Developer settings → Personal access tokens (classic) → 勾 `repo`，
-用 token 当密码，或直接用 GitHub Desktop 推送。
+本机已把 GitHub 凭据接到 gh CLI：**全局 git config 里对 `https://github.com` 指定了
+`gh.exe auth git-credential`**，之后 `git push` 直接可用，无需输密码、无需 PAT
+（token 存在系统 keyring，不在 `.git/config` 里）。换机器时执行一次
+`gh auth login --web --scopes "repo,workflow"` + `gh auth setup-git` 即可。
+若 gh 别名在 Git Bash 下不生效，把 helper 里的 `gh.exe` 换成 §2 表格下方那个真实绝对路径。
 
 ### 3.6 触发构建并下载 IPA
 
 1. 首次 push **通常会自动触发** `iOS IPA (unsigned)`（workflow 的 `paths` 包含
    `www/index.html` / `ios/**` / `package*.json` / workflow 本身）。
    若 Actions 里没动静：仓库 → **Actions** → 左侧 `iOS IPA (unsigned)` → **Run workflow** → 选 `main`。
-2. 首次约 5–15 分钟（`npm ci` + `pod install` + Xcode archive）。
-3. 跑完进入该 run → 页面底部 **Artifacts** → 下载 `VindHool-unsigned-<commit sha>.zip`
+2. **实测 2 分 14 秒**（macos-15：`npm ci` + `pod install` + Xcode archive + 打包），
+   排队久时可能到 5–15 分钟。可用 `gh run watch <run-id> -R hans-johnson/VindHool-iOS --exit-status` 盯进度。
+3. 跑完可用命令行直接取产物，不必点网页：
+   ```powershell
+   gh run download <run-id> -R hans-johnson/VindHool-iOS -D dist/dl
+   ```
+   或仓库 → Actions → 该 run → 底部 **Artifacts** → 下载 `VindHool-unsigned-<commit sha>.zip`
    → 解压得到 **`VindHool-unsigned.ipa`**（artifact 只保留 **14 天**，及时下载）。
 
 ### 3.7 装到 iPhone（未签名包必须重签）

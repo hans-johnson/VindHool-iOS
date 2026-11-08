@@ -39,6 +39,12 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # 该 action 默认 packages 含已下架的 `tools`，会让 sdkmanager 直接 exit 1
+          # （2026-11 首次 CI 实测：Warning: Failed to find package 'tools'）。
+          # 平台与 build-tools 由下一步按 compileSdkVersion 自行安装。
+          packages: platform-tools
+          accept-android-sdk-licenses: true
 
       - name: Install SDK packages (versions derived from Gradle)
         run: |
