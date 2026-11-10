@@ -20,7 +20,9 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15
+    # macos-26 自带 Xcode 26 / iOS 26 SDK：用新 SDK 编译后，键盘上方的
+    # ↑ ↓ 完成 工具条才会用系统新的「圆角悬浮」样式；用旧 SDK 编出来是紧贴键盘的长方形。
+    runs-on: macos-26
     timeout-minutes: 45
 
     steps:
