@@ -11,7 +11,8 @@ install! 'cocoapods', :disable_input_output_paths => true
 def capacitor_pods
   pod 'Capacitor', :path => '../../node_modules/@capacitor/ios'
   pod 'CapacitorCordova', :path => '../../node_modules/@capacitor/ios'
-
+  # 键盘插件：用来关掉 WKWebView 自带的「上/下箭头 + Done」表单助手条
+  pod 'CapacitorKeyboard', :path => '../../node_modules/@capacitor/keyboard'
 end
 
 target 'App' do

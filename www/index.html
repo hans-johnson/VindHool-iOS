@@ -2130,6 +2130,11 @@ svg.leaflet-image-layer.leaflet-interactive path {
      Android 壳、浏览器以及抽屉展开态（h=1/2/3）完全不受影响。 */
   body.ios-shell .drawer[data-h="0"] .drawer-body{display:none}
   body.ios-shell .drawer[data-h="0"] .drawer-safe{flex:0 0 var(--sb);height:var(--sb);display:block}
+  /* iOS 折叠 + 方向条：安全垫里把两段之间的 1px 竖线续到屏幕物理底。
+     以前竖线到方向条下沿就断，最后 34px 是一片空白，看着像「线断在中间」。 */
+  body.ios-shell .drawer[data-h="0"] .drawer-safe{background:var(--bg);position:relative}
+  body.ios-shell .drawer[data-h="0"] .drawer-safe::before{
+    content:'';position:absolute;left:50%;top:0;bottom:0;width:1px;margin-left:-.5px;background:var(--line)}
   /* 一套线性图标：同一 viewBox / 1.75 描边 / 20×20 / currentColor */
   .ico{width:20px;height:20px;display:block;fill:none;stroke:currentColor;
     stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
@@ -3453,9 +3458,13 @@ function modeKindOf(lineId) {
   return lineModeOf(lineId);
 }
 /* 线路号徽标配色：实心=方式已知且车型已查到；浅底深字=方式已知但车型未查到；灰底白字=方式都判不出 */
-const BADGE_LIGHT = { bus: ['#BBF7D0', '#15803D'], tram: ['#BFDBFE', '#1D4ED8'] };
+const BADGE_LIGHT = {
+  bus: ['#BBF7D0', '#15803D'], tram: ['#BFDBFE', '#1D4ED8'],
+  metro: ['#FECACA', '#B91C1C'], train: ['#DDD6FE', '#6D28D9'],
+};
+const MODES_ALL = ['bus', 'tram', 'metro', 'train'];
 function lineBadgeColors(lineId, kind, no) {
-  const mode = (kind === 'bus' || kind === 'tram') ? kind : lineModeById(lineId);
+  const mode = MODES_ALL.includes(kind) ? kind : lineModeKindOf(lineId);
   if (!mode) return { bg: '#6B7280', fg: '#fff' };
   const modelOk = no ? !!modelName(no, mode) : true;
   if (modelOk) return { bg: TYPE_COLOR[mode], fg: '#fff' };
@@ -3468,9 +3477,9 @@ function lineBadgeStyle(lineId, kind, no) {
 }
 /* 线路号徽标颜色：线路类型优先，其次按传入的车辆类型；徽标永远用类型色（不用中性色） */
 function lineTc(lineId, kind) {
-  if (kind === 'tram' || kind === 'bus' || kind === 'other') return TYPE_COLOR[kind];
+  if (kind === 'tram' || kind === 'bus' || kind === 'metro' || kind === 'train' || kind === 'other') return TYPE_COLOR[kind];
   // 判不出线路类型时用中性灰，不回落成公交绿（避免把未知线路冒充成公交）
-  const m = lineModeById(lineId);
+  const m = lineModeKindOf(lineId);
   return m ? TYPE_COLOR[m] : '#6B7280';
 }
 /* 年份：zone01 车队库（巴士为主）优先；有轨电车 zone01 没有年份，回落到构建期抓来的
@@ -4058,6 +4067,8 @@ function ensureMap() {
   map.on('zoomend', () => { syncLabels(); resizePins(); syncSeqLabels(); });  // 放大到 14 级才显示车号/站名标签
   map.on('moveend', () => { drawVehPins(); syncSeqLabels(); });   // 平移后重算错开与站名避让
   // 点地图：只做选中/取消选中与轻标签，不进入「附近车辆」模式（该模式只由卡片按钮进入）
+  /* 用户自己拖动/缩放地图＝不再想被定位拽着走：关跟随、取消待定的「居中一次」 */
+  map.on('dragstart zoomstart', () => { geoFollow = false; geoWantCenter = false; });
   map.on('click', (e) => {
     const t = e.originalEvent && e.originalEvent.target;
     // 点在车辆/站点标记或弹窗上时仍走原有逻辑
@@ -4291,6 +4302,18 @@ function fetchPhoton(at, token) {
    inspectMapAt 在窗口内直接忽略。 */
 let mapMuteUntil = 0;
 function muteMapClick(ms) { mapMuteUntil = Date.now() + (ms || 450); }
+/* 抽屉里任何一次点按都开静默窗口：搜索结果被点掉/重排后，浏览器补发的 click
+   会落到下方地图上，弹出一张「附近」随机卡 —— 这是「点结果反而弹附近卡片」的来源。 */
+function inMuteZone(target, extra) {
+  if (!target || typeof target.closest !== 'function') return false;
+  return !!target.closest('#drawer, #searchpanel, #dirbar' + (extra || ''));
+}
+document.addEventListener('pointerdown', (e) => {
+  if (inMuteZone(e.target, ', .leaflet-popup')) muteMapClick(700);
+}, true);
+document.addEventListener('click', (e) => {
+  if (inMuteZone(e.target)) muteMapClick(700);
+}, true);
 function inspectMapAt(latlng) {
   if (!map) return;
   if (Date.now() < mapMuteUntil) return;
@@ -4526,13 +4549,30 @@ function syncLabels() {
 
 /* ===== 手机定位：watchPosition + 蓝点/精度圈 + 附近 3 站 =====
    file:// 或非安全上下文下浏览器一定拒绝定位 → 按钮置灰并说明。 */
-let geoWatch = null, geoFollow = true, geoPos = null, geoLayer = null, geoBusy = false, geoErrMsg = '';
+/* geoFollow 默认关：以前默认开，watchPosition 每 1–2 秒回调一次就 setView 一次，
+   用户点定位后再点别的站，地图刚飞过去就被下一次定位回调拽回原地（看起来像瞬移 bug）。
+   现在只有「跟随我：开」才持续居中；点 ◎ 只居中一次（geoWantCenter）。 */
+let geoWatch = null, geoFollow = false, geoWantCenter = false,
+    geoPos = null, geoLayer = null, geoBusy = false, geoErrMsg = '';
 let geoHintT = null;
 /* 面板开合状态存本机：用户关掉后，watchPosition 回调 / feed / 切换来源都不再把它顶出来；
    关闭时不停 watchPosition（蓝点继续更新），只是面板不显示。 */
 let geoPanelOpen = (() => { try { return localStorage.getItem('dl_geo_panel_v1') !== '1'; } catch { return true; } })();
 function geoPersist(open) {
   try { localStorage.setItem('dl_geo_panel_v1', open ? '0' : '1'); } catch { /* ignore */ }
+}
+/* iOS 键盘顶上那条「↑ ↓ Done」是 WKWebView 的表单助手条（原生控件，网页改不了样式）。
+   壳里装了 @capacitor/keyboard，用它的 setAccessoryBarVisible(false) 直接不显示；
+   搜索框自己就是唯一输入框，不需要上一项/下一项，Done 也由回车取代。 */
+function hideNativeKbBar() {
+  try {
+    const C = window.Capacitor;
+    const K = C && C.Plugins && C.Plugins.Keyboard;
+    if (K && typeof K.setAccessoryBarVisible === 'function') {
+      const r = K.setAccessoryBarVisible({ isVisible: false });
+      if (r && r.catch) r.catch(() => {});
+    }
+  } catch { /* 浏览器 / 没装插件：无所谓 */ }
 }
 /* 定位面板的关闭逻辑统一走这里：× 按钮 / 点背景遮罩 / Esc 三个入口都调它，
    关闭后不残留遮罩，地图与列表可立即交互；蓝点保留，再点 ◎ 可重新显示。 */
@@ -4616,7 +4656,7 @@ function geoPanel(list, trips, note) {
     ${rows}`;
   $('geo-follow').onclick = () => {
     geoFollow = !geoFollow;
-    if (geoFollow && geoPos && map) map.setView(geoPos, Math.max(map.getZoom(), 15));
+    if (geoFollow && geoPos && map) { geoWantCenter = false; map.setView(geoPos, Math.max(map.getZoom(), 15)); }
     geoNearby();
   };
   for (const b of $('geopanel').querySelectorAll('[data-gstop]')) {
@@ -4647,12 +4687,18 @@ function geoDraw() {
       fillColor: '#2563eb', fillOpacity: 0.12 }).addTo(geoLayer);
   }
   L.circleMarker(geoPos, { radius: 9, color: '#fff', weight: 2, fillColor: '#2563eb', fillOpacity: 1 }).addTo(geoLayer);
-  if (geoFollow) map.setView(geoPos, Math.max(map.getZoom(), 15));
+  /* 这里不再 setView：画蓝点与「要不要移动地图」是两件事，
+     以前放在这里导致每次定位回调（含刚点完别的站）都把镜头拽回去。 */
 }
 function geoOk(p) {
   geoPos = [p.coords.latitude, p.coords.longitude, p.coords.accuracy || 0];
   geoErrMsg = '';
   geoDraw();
+  /* 只有「显式想要居中」时才移动地图：点 ◎ 的第一次定位(geoWantCenter) 或跟随开关打开 */
+  if ((geoWantCenter || geoFollow) && map) {
+    geoWantCenter = false;
+    map.setView(geoPos, Math.max(map.getZoom(), 15));
+  }
   geoNearby();
 }
 function geoErr(e) {
@@ -4728,7 +4774,12 @@ function geoInit() {
     if (!$('geopanel').classList.contains('hidden')) { geoClose(); return; }
     geoReopen();
     geoStart();
-    if (geoPos) { geoDraw(); geoNearby(); }
+    geoWantCenter = true;                 // 点定位：这次要居中，但只居中一次
+    if (geoPos) {
+      geoDraw(); geoNearby();
+      if (map) map.setView(geoPos, Math.max(map.getZoom(), 15));
+      geoWantCenter = false;
+    }
     ensureMap();
   };
 }
@@ -5321,11 +5372,11 @@ function headingOf(v) {
 }
 function vehPinIcon(model, kind, hl, lineLabel, bearing, unk, abbr) {
   const lo = pinLayout(model, lineLabel, abbr);
-  /* 车型查不到 → 底色与列表线路徽标一致：浅绿(巴士)/浅蓝(有轨电车) + 深字；
-     查得到车型 → 实心类型色；类型本身也判不出仍用中性灰。 */
-  const light = unk ? BADGE_LIGHT[kind] : null;
-  const tc = light ? light[0] : (TYPE_COLOR[kind] || TYPE_COLOR.other);
-  const fg = light ? light[1] : pinFg(tc);
+  /* 车辆图钉一律用「方式色」实心：巴士绿 / 有轨蓝 / 地铁红 / 火车紫。
+     以前车型查不到就掉成浅色甚至灰，看起来像「这辆不算数」；
+     车型未知只靠虚线外框（.vpin.unk）表达，不用颜色区分可读性。 */
+  const tc = TYPE_COLOR[kind] || TYPE_COLOR.other;
+  const fg = pinFg(tc);
   // 方向：只有真给了 bearing（GTFS-RT position.bearing / OVapi 字段 3）才旋转箭头；
   // 缺失/非数字 → 不渲染箭头、也不给随机朝向
   const b = (typeof bearing === 'number' && isFinite(bearing)) ? bearing : null;
@@ -5350,7 +5401,7 @@ function vehPinIcon(model, kind, hl, lineLabel, bearing, unk, abbr) {
   const rad = lo.w > lo.h + 2 ? Math.round(lo.h / 2) + 'px' : '';
   return L.divIcon({
     className: 'vpin ' + (kind || 'other') + (unk ? ' unk' : '') + (hl ? ' hl' : ''),
-    html: `<div class="vpin-b" style="width:${lo.w}px;height:${lo.h}px;font-size:${lo.fs}px;line-height:${lo.h}px;${rad ? 'border-radius:' + rad + ';' : ''}--tc:${tc};background:${tc};color:${fg};${light ? 'text-shadow:none;' : ''}">${lo.html}${arrow}</div>`,
+    html: `<div class="vpin-b" style="width:${lo.w}px;height:${lo.h}px;font-size:${lo.fs}px;line-height:${lo.h}px;${rad ? 'border-radius:' + rad + ';' : ''}--tc:${tc};background:${tc};color:${fg};">${lo.html}${arrow}</div>`,
     iconSize: [lo.w, lo.h], iconAnchor: [lo.w / 2, lo.h / 2], popupAnchor: [0, -lo.h / 2],
   });
 }
@@ -5866,7 +5917,7 @@ function addVehicleMarker(v) {
     + (v.locOff ? `<div style="color:#6b7280;font-size:11px;margin-top:4px">下一站未收录坐标，点按位置≈${esc(v.locName || '')}（差 ${Math.abs(v.locOff)} 站）</div>` : '');
   const pop = popBuild();
   const label = lineLabel(v.lineId, v.lineNr);
-  const ki = vehPinKind(v.no, v.lineId, v.dirIdx);   // 已知车型直接用；未知则按同线路已知车多数推断
+  const ki = vehPinKind(v.no, v.lineId, v.dirIdx, v.lineNr);   // 已知车型直接用；未知则按同线路已知车多数推断
   const kind = ki.kind;
   const model = v.model || modelName(no, kind) || '';
   const old = vehPins[no];
@@ -8140,8 +8191,37 @@ function renderModelCands(cands, q) {
 const TYPE_COLOR = { tram: '#2563EB', bus: '#15803D', metro: '#DC2626', train: '#7C3AED', other: '#6B7280' };
 let lastStates = null;      // 最近一次 allVehicleStates 的结果，供「同线路多数」使用
 /* 强判定（不含同线路多数，避免推断时互相递归）：线路 m → 车型库 → 关键字 */
+/* 只看「这条线路到底是什么方式」：线路表里有的按 route_type 判（bus/tram/metro/train），
+   旧 LINE_MODES 只有 bus/tram。判不出返回 null，不猜。 */
+function lineModeKindOf(lineId) {
+  if (lineId == null || lineId === '') return null;
+  const l = DATA.lines[String(lineId)];
+  if (l) return modeKindOf(lineId);
+  const lm = (window.LINE_MODES || {})[String(lineId)];
+  return (lm === 'tram' || lm === 'bus' || lm === 'metro' || lm === 'train') ? lm : null;
+}
+/* 没有 line_id 的车辆（De Lijn 部分 feed 只给线路号）：按线路号反查方式。
+   以前这种情况直接落到「灰」，明明是同一条巴士线路，列表绿、地图灰。 */
+let LINE_MODE_BY_NR = null;
+function lineModeByNr(nr) {
+  const k = String(nr || '').trim().toUpperCase();
+  if (!k) return null;
+  if (!LINE_MODE_BY_NR) {
+    LINE_MODE_BY_NR = new Map();
+    for (const id of Object.keys(DATA.lines || {})) {
+      const l = DATA.lines[id];
+      const n = String((l && l[0]) || '').trim().toUpperCase();
+      if (!n) continue;
+      const m = modeKindOf(id);
+      if (!m) continue;
+      /* 同号多方式（比如某市 4 路是巴士、另一市 4 路是电车）→ 取先出现的，不来回跳 */
+      if (!LINE_MODE_BY_NR.has(n)) LINE_MODE_BY_NR.set(n, m);
+    }
+  }
+  return LINE_MODE_BY_NR.get(k) || null;
+}
 function vehTypeBase(no, lineId, lineNr) {
-  const lm = lineModeById(lineId);
+  const lm = lineModeKindOf(lineId);
   if (lm) return { kind: lm, src: 'line' };
   const f = fleetOf(no);
   const model = (f && f[0]) || '';
@@ -8157,6 +8237,9 @@ function vehTypeBase(no, lineId, lineNr) {
   const l = lineId != null ? DATA.lines[String(lineId)] : null;
   const ln = String(lineNr != null ? lineNr : ((l && l[0]) || '') || '').trim().toUpperCase();
   if (/^KT$/.test(ln) || /^T\d*$/.test(ln)) return { kind: 'tram', src: 'keyword' };
+  /* 只有线路号：去线路表按号反查方式（巴士绿 / 有轨蓝 / 地铁红 / 火车紫） */
+  const byNr = lineModeByNr(ln);
+  if (byNr) return { kind: byNr, src: 'line' };
   return { kind: null, src: null };
 }
 /* 同线路（有方向就同方向）其它车的强判定占多数；一辆都判不出 → null */
@@ -8187,8 +8270,9 @@ function vehTypeOf(no, lineId, lineNr, dirIdx) {
   return { kind: null, src: null };
 }
 /* 车辆图钉用：{kind, unk}；unk=true 表示类型靠推断/未知，外框保持虚线 */
-function vehPinKind(no, lineId, dirIdx) {
-  const t = vehTypeOf(no, lineId, null, dirIdx);
+function vehPinKind(no, lineId, dirIdx, lineNr) {
+  /* 把 lineNr 一起传下去：部分 feed 只给线路号不给 line_id，缺了它就只能判成「灰」 */
+  const t = vehTypeOf(no, lineId, lineNr != null ? lineNr : null, dirIdx);
   const solid = t.src === 'line' || t.src === 'model' || t.src === 'fleet' || t.src === 'keyword';
   return { kind: t.kind || 'other', unk: !solid };
 }
@@ -8681,14 +8765,14 @@ async function run(force, live) {
   if (!softRefresh) drawerUserCollapsed = false;   // 用户主动查询：允许结果把抽屉展开
   hideDirbar();
   if (mode === 'near') return doNearPlace(q);     // 周边：地名 → 坐标 → 半径内车辆
-  if (!q) { $('out').innerHTML = viewHead('搜索') + '<div class="empty">输入站名、线路号、车队号/车牌或车型</div>'; return; }
+  if (!q) { $('out').innerHTML = '<div class="empty">输入站名、线路号、车队号/车牌或车型</div>'; return; }
   if (mode === 'stop') {
     const cands = findStops(q, 12);
     if (!cands.length) {
       const scope = isAll()
         ? `已在 ${ALL_SRCS.map(srcLabelOf).join(' / ')} 四家共 ${allSources().reduce((n, [, d]) => n + Object.keys(d.stops || {}).length, 0)} 个站点里查找`
         : `站点库 ${Object.keys(DATA.stops).length} 条（含各站台）`;
-      $('out').innerHTML = viewHead('搜索站点') + `<div class="empty">没有匹配「${esc(q)}」的站点。<br>${esc(scope)}；也可以直接输入城市名。</div>`;
+      $('out').innerHTML = `<div class="empty">没有匹配「${esc(q)}」的站点。<br>${esc(scope)}；也可以直接输入城市名。</div>`;
       return;
     }
     /* 输入即查：只列候选，不替用户跳进详情（只有一个精确命中时才自动进站的旧行为只留给回车） */
@@ -8704,11 +8788,10 @@ async function run(force, live) {
   }
   if (mode === 'line') {
     const lines = linesByNr(q);
-    if (!lines.length) { $('out').innerHTML = viewHead('搜索线路') + `<div class="empty">索引里没有线路「${esc(q)}」</div>`; return; }
+    if (!lines.length) { $('out').innerHTML = `<div class="empty">索引里没有线路「${esc(q)}」</div>`; return; }
     if (lines.length > 1 || live) {
       /* 「「49」有 8 条（四家运营商）」这行冗余状态栏已删除：条数由把手条的「N 项」体现 */
-      $('out').innerHTML = viewHead('搜索线路') +
-        lines.map((l) => {
+      $('out').innerHTML = lines.map((l) => {
           const eh = endsHtml(l.dest);
           /* TEC / SNCB 不少线路只有编号没有起终点，别留一个悬空的「TEC ·」 */
           const tag = isAll() ? `<b class="srcmini">${esc(srcLabelOf(l.src))}</b> · ` : '';
@@ -8737,14 +8820,14 @@ async function run(force, live) {
   if (rows.length) return renderCarRows(q, rows);
   if (!Object.keys(DATA.fleet).length) {
     hideMap();
-    $('out').innerHTML = viewHead('搜索车辆') + `<div class="empty">当前快照里没有匹配「${esc(q)}」的车。<br>
+    $('out').innerHTML = `<div class="empty">当前快照里没有匹配「${esc(q)}」的车。<br>
       ${esc(DATA.label)} 只提供 feed 里的车队号，没有本地车队库，因此不能按车型查车辆。</div>`;
     return;
   }
   const cands = modelCandidates(q, 12);
   if (!cands.length) {
     hideMap();
-    $('out').innerHTML = viewHead('搜索车型') + `<div class="empty">本地车队库里没有匹配「${esc(q)}」的车或车型。<br>
+    $('out').innerHTML = `<div class="empty">本地车队库里没有匹配「${esc(q)}」的车或车型。<br>
       只列比利时境内实际在册的车型（非全球目录）；试试 <b>Van Hool</b>、<b>MAN Lion's City</b>、<b>BYD</b>、<b>IVECO</b>、<b>Mercedes</b>。</div>`;
     return;
   }
@@ -8959,59 +9042,10 @@ function placeSug() {
   b.style.top = Math.round(r.bottom + 6) + 'px';
 }
 function sugRender() {
-  if (qComposing) return;               // IME 组合期间不联想，避免候选与输入法候选抢焦点
-  const q = normQ($('q').value);
-  const m = mode;
-  if (!q) { sugClose(); return; }
-  if (m === 'near') { sugClose(); return; }   // 周边仍按地名取坐标，不在这里联想
-  const items = sugItems(m, q);
-  const b = $('sug');
-  sugMode = m;
-  if (!items.length) {
-    b.innerHTML = '<div class="sug-empty">没有匹配的本地结果（联想不发网络请求）</div>';
-    b.classList.remove('hidden'); placeSug(); sugRows = []; sugIdx = -1;
-    return;
-  }
-  b.innerHTML = items.map((it, i) => {
-    // 候选行只留选项本身（名字/车号 + 需要的城市/车型），不再附带「城市/站/线路/车」标签
-    if (it.zh) return `<button class="sug-row zh" role="option" data-i="${i}"><span class="t">${esc(it.zh)}</span><span class="s">${esc(it.orig)}</span></button>`;
-    if (m === 'line') {
-      /* 起点 → 终点 都保留（起终点是选线的关键信息）；名字长时由 CSS 折两行/省略 */
-      const ps = endsParts(it.dest);
-      const o = ps[0] || '', d = ps.length > 1 ? ps[ps.length - 1] : '';
-      const tb = (it.mode === 'tram' || it.mode === 'metro' || it.mode === 'train') ? it.mode : 'bus';
-      const ends = (o && d && o !== d)
-        ? `<span class="o">${esc(o)}</span><span class="arr">→</span><span class="d">${esc(d)}</span>`
-        : `<span class="d">${esc(d || o || '—')}</span>`;
-      /* 右侧继续标注城市（中文），来源只由这行文字的颜色表达，不再另加运营商名字徽标 */
-      const city = (it.city ? cityZh(it.city) : '') || lineCityZh(it.lineId, it.src) || cityOrSrc(it.src, '');
-      return `<button class="sug-row line" role="option" data-i="${i}"><span class="t"><span class="lc ${tb}">${esc(it.nr)}</span></span><span class="s">${ends}</span>` +
-        `<span class="c ${srcTextCls(it.src)}" style="${srcColorStyle(it.src)}">${esc(city)}</span></button>`;
-    }
-    /* 车辆候选：车型 + 底盘（底盘是 zone01 的独立字段，输 B7RLE 这类底盘号时要能对上号） */
-    if (m === 'car') {
-      const sub = [it.model, it.chassis].filter(Boolean).join(' · ');
-      return `<button class="sug-row car" role="option" data-i="${i}"><span class="t">${esc(it.no)}</span>` +
-        `<span class="s ${srcTextCls(it.src)}" style="${srcColorStyle(it.src)}">${esc(sub)}</span></button>`;
-    }
-    /* 站点候选右侧仍是中文城市，染成该站所属运营商的识别色；不写运营商名字、不描边。
-       TEC/STIB/SNCB 的 GTFS stops 没有 city 列 → 写运营商简称（STIB 写「首都」）。 */
-    const city = cityOrSrc(it.src, it.city);
-    return `<button class="sug-row stop" role="option" data-i="${i}"><span class="t">${esc(it.name)}</span>` +
-      `<span class="s ${srcTextCls(it.src)}" style="${srcColorStyle(it.src)}">${esc(city)}</span></button>`;
-  }).join('') + (sugTotal > items.length
-    /* 联想只给前 8 条：末尾一行说明「还有多少条在下面的列表里」，点它直接看完整结果 */
-    ? `<button class="sug-more" type="button" data-more="1">还有 <b>${sugTotal - items.length}</b> 项<span class="arr">在下方列表查看 ›</span></button>`
-    : '');
-  b.classList.remove('hidden');
-  placeSug();
-  sugRows = items; sugIdx = -1;
-  fitSugCity();
-  for (const row of b.querySelectorAll('.sug-row')) {
-    bindTapRow(row, () => sugPick(+row.dataset.i));
-  }
-  const more = b.querySelector('.sug-more');
-  if (more) bindTapRow(more, () => { sugClose(); closeSheet('search'); run(false); });
+  /* 联想卡整体取消（用户要求）：本地联想的命中口径是「任意包含 + 不校验在线 + 站台不合并」，
+     和下方列表（精确/同名合并/在线状态）差太多 —— 同一个词联想出 56 条、列表只出 8 条，
+     看起来像列表漏了。保留函数壳，所有旧调用点一律不显示。 */
+  sugClose();
 }
 function sugPick(i) {
   const it = sugRows[i];
@@ -9183,32 +9217,19 @@ document.addEventListener('click', (e) => {
   const ln = e.target && e.target.closest ? e.target.closest('[data-goline]') : null;
   if (ln) { e.preventDefault(); goLineFromDataset(ln.dataset); }
 });
-/* 键盘：上下键在候选里移动，回车选中；Esc 先收候选。
-   IME 组合期间（中文/日文等）所有按键一律放行给输入法：上下键翻候选、回车选字、Esc 取消都不能被吃掉。 */
+/* 键盘：回车＝搜索（取代原来的「查询」按钮）；Esc 收起搜索面板。
+   联想卡取消后不再有上下键选候选。IME 组合期间一律放行给输入法。 */
 $('q').addEventListener('keydown', (e) => {
   if (e.isComposing || e.keyCode === 229 || qComposing) return;
-  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-    if (!sugOpen() || !sugRows.length) return;
-    e.preventDefault();
-    sugIdx = (sugIdx + (e.key === 'ArrowDown' ? 1 : -1) + sugRows.length) % sugRows.length;
-    const rows = $('sug').querySelectorAll('.sug-row');
-    rows.forEach((r, i) => r.classList.toggle('on', i === sugIdx));
-    if (rows[sugIdx]) rows[sugIdx].scrollIntoView({ block: 'nearest' });
-    return;
-  }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') return;
   if (e.key === 'Enter') {
     e.preventDefault();
-    /* 只有用上下键明确选中了某条候选才“选它”；否则回车＝搜索框里的词，
-       与 Google Maps 一致（回车取代了原来的「查询」按钮）。 */
-    if (sugOpen() && sugRows.length && sugIdx >= 0) { sugPick(sugIdx); return; }
-    sugClose();
     $('q').blur();
     run(false);
     return;
   }
   if (e.key === 'Escape') {
-    if (sugOpen()) { e.preventDefault(); sugClose(); }
-    else if (mode !== 'near') { closeSheet('search'); }
+    if (mode !== 'near') closeSheet('search');
   }
 });
 
@@ -9216,10 +9237,10 @@ $('q').addEventListener('keydown', (e) => {
    IME 组合期间不做任何 value 改写、不联想；compositionend 后再出候选。 */
 let qComposing = false, liveTimer = 0;
 $('q').addEventListener('compositionstart', () => { qComposing = true; clearTimeout(sugTimer); });
+/* 联想已取消：compositionstart/end 只负责「上屏后再查一次」 */
 $('q').addEventListener('compositionend', () => {
   qComposing = false;
   clearTimeout(sugTimer);
-  sugTimer = setTimeout(() => sugRender(), 130);
   clearTimeout(liveTimer);
   liveTimer = setTimeout(livePreview, 220);   // 中文输入法：上屏后再查，避免拼音字母触发一轮空结果
 });
@@ -9232,7 +9253,6 @@ $('q').addEventListener('input', (e) => {
     if ($('searchpanel') && !$('searchpanel').classList.contains('hidden')) renderSearchIdle();
     return;
   }
-  sugTimer = setTimeout(() => sugRender(), 130);
   liveTimer = setTimeout(livePreview, 220);   // 输入即查：列表同步刷新，不用按回车
 });
 /* 输入即出结果：只刷新下方列表，不自动跳进某个站点/线路详情（那是回车或点候选的动作）。
@@ -9244,9 +9264,10 @@ function livePreview() {
 function renderSearchIdle() {
   if (!$('out')) return;
   const cur = queryHeadTitle();
-  $('out').innerHTML = viewHead('搜索') + `<div class="empty">${cur ? '' : '输入站名、线路号、车队号/车牌或车型'}</div>`;
+  $('out').innerHTML = `<div class="empty">${cur ? '' : '输入站名、线路号、车队号/车牌或车型'}</div>`;
 }
-$('q').addEventListener('focus', () => { if ($('q').value.trim()) sugRender(); });
+/* 联想已取消：聚焦不再弹候选卡，直接让下方列表刷新一轮 */
+$('q').addEventListener('focus', () => { hideNativeKbBar(); if ($('q').value.trim()) livePreview(); });
 /* 失焦只收联想卡，绝不关搜索面板：iOS 上点页签/按钮时 input 会先失焦，
    旧逻辑（activeElement 不在面板内就关面板）会把整块搜索一起关掉。 */
 $('q').addEventListener('blur', () => setTimeout(() => {
@@ -9350,6 +9371,12 @@ function closeSheet(id) {
   if (id === 'search') {
     $('q').blur(); sugClose();
     $('searchpanel').classList.add('hidden');
+    /* 关搜索不缩回半屏：列表里还有东西就把抽屉顶到最高档（≈搜索时贴着面板的高度）。
+       以前 searching 一去掉，高度立刻回落到 data-h（45vh），看起来像「一关搜索列表就掉下去」。 */
+    const out = $('out');
+    const d = $('drawer');
+    const has = !!(out && out.querySelector('.cand,.vrow,.card,.empty,.grp,.srcnote,.offgrp'));
+    if (has && d && d.dataset.h !== '3') setDrawer(3);
     syncSearchLayout();                  // 移除 searching：抽屉回到 data-h 定义的高度
     return;
   }
@@ -9942,6 +9969,9 @@ function storageNote() {
   initIosBack();
   setTimeout(initIosBack, 600);   // iOS 上 Capacitor 桥若晚于页面脚本注入，再试一次
   window.matchMedia('(max-width:760px)').addEventListener('change', setTitle);
+  hideNativeKbBar();
+  setTimeout(hideNativeKbBar, 800);      // 桥/插件注册可能比页面晚到
+  setTimeout(hideNativeKbBar, 2500);
   /* 搜索面板高度会被键盘/安全区/旋转改变：视口一变就重新量一次，列表始终贴着面板下沿 */
   window.addEventListener('resize', () => { if (document.body.classList.contains('searching')) syncSearchLayout(); });
   window.addEventListener('orientationchange', () => setTimeout(syncSearchLayout, 260));
