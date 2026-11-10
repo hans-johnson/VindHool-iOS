@@ -8273,6 +8273,10 @@ function carRows(q, trips, feedVehicles) {
   }
   rows.sort((a, b) => a.rank - b.rank || (b.online ? 1 : 0) - (a.online ? 1 : 0) ||
     a.no.localeCompare(b.no, 'en', { numeric: true }));
+  /* 车号/车牌已经有精确命中时，只留精确（车号 ①、车牌 ②）——
+     否则搜 1000 会把 51000 之类的包含命中一起列出来，用户以为搜错了车。
+     精确命中为空（例如只记得前几位）才退回 ③ 前缀/包含匹配。 */
+  if (rows.some((r) => r.rank <= 2)) return rows.filter((r) => r.rank <= 2);
   return rows;
 }
 /* 列表点选：线路视图内就地高亮 + 展开明细（不 pushNav、不换列表、不清其它车）；
