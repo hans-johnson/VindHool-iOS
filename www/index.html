@@ -4088,8 +4088,11 @@ function ensureMap() {
   // 点地图：只做选中/取消选中与轻标签，不进入「附近车辆」模式（该模式只由卡片按钮进入）
   /* 用户自己拖动/缩放地图＝不再想被定位拽着走：关跟随、取消待定的「居中一次」 */
   /* 拖动/缩放后短暂静默地图点击：触屏轻扫结束时 Leaflet 可能补发一次 click，
-     命中站点会把底栏顶起来。已有的 muteMapClick 正好用于这种误触。 */
+     命中站点会把底栏顶起来。已有的 muteMapClick 正好用于这种误触。
+     注意 dragstart 那次只有 450ms，慢速拖动会让它中途过期；真正的高发时机是
+     拖动"结束"的那一刻，所以 dragend/zoomend 再上一道更长的静默窗口。 */
   map.on('dragstart zoomstart', () => { geoFollow = false; geoWantCenter = false; muteMapClick(450); });
+  map.on('dragend zoomend', () => muteMapClick(900));
   map.on('click', (e) => {
     const t = e.originalEvent && e.originalEvent.target;
     // 点在车辆/站点标记或弹窗上时仍走原有逻辑
@@ -4323,6 +4326,15 @@ function fetchPhoton(at, token) {
    inspectMapAt 在窗口内直接忽略。 */
 let mapMuteUntil = 0;
 function muteMapClick(ms) { mapMuteUntil = Date.now() + (ms || 450); }
+/* 地图标记（站点圆点/站名标签）点开的统一入口。
+   地图的 click 事件在命中标记时会被 Leaflet 拦下、不走 map.on('click')，
+   所以拖动结束后补发的 click 只要落在标记上，就能绕过 inspectMapAt 里的静默判断，
+   直接把底栏顶起来 —— 这正是「只是拖了下地图，底边菜单就弹起」的来源。
+   这里补一道同样的静默检查；正常点站（非静默期）不受影响。 */
+function openStopPanelFromMap(st) {
+  if (Date.now() < mapMuteUntil) return;
+  openStopPanel(st);
+}
 /* 抽屉里任何一次点按都开静默窗口：搜索结果被点掉/重排后，浏览器补发的 click
    会落到下方地图上，弹出一张「附近」随机卡 —— 这是「点结果反而弹附近卡片」的来源。 */
 function inMuteZone(target, extra) {
@@ -4379,7 +4391,7 @@ function selectStopAt(at, st) {
     opacity: 1, interactive: true }).setLatLng(at).setContent(stopLbHtml({ ids, name: nm, city }));
   lb.addTo(map);
   const sel = { ids, name: nm, city, src: st.src || SRC };
-  const open = () => openStopPanel(sel);
+  const open = () => openStopPanelFromMap(sel);
   mk.on('click', open);
   lb.on('click', open);
   mapStopSel = { key: String(nm) + '|' + city, at, st: sel, mk, lb };
@@ -6921,10 +6933,10 @@ async function doStop(ids, name, city, keepCands) {
             opacity: 1, interactive: true }).setLatLng(c)
             .setContent(stopLbHtml({ ids, name, city }));
           firstLb.addTo(map);
-          firstLb.on('click', () => openStopPanel({ ids, name, city }));
-          mk.on('click', () => openStopPanel({ ids, name, city }));
+          firstLb.on('click', () => openStopPanelFromMap({ ids, name, city }));
+          mk.on('click', () => openStopPanelFromMap({ ids, name, city }));
         } else {
-          mk.on('click', () => openStopPanel({ ids, name, city }));
+          mk.on('click', () => openStopPanelFromMap({ ids, name, city }));
         }
       }
       if (firstMk) mapStopSel = { key: String(name) + '|' + String(city || ''), at: firstMk.getLatLng(), st: { ids, name, city }, mk: firstMk, lb: firstLb };
